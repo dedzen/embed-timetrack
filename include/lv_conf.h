@@ -3,7 +3,8 @@
 
 #define LV_COLOR_DEPTH     16
 #define LV_COLOR_16_SWAP   0
-#define LV_MEM_SIZE        (48U * 1024U)
+#define LV_MEM_SIZE        (128U * 1024U)
+
 #define LV_TICK_CUSTOM     1
 #if LV_TICK_CUSTOM
   #define LV_TICK_CUSTOM_INCLUDE "Arduino.h"
@@ -11,10 +12,7 @@
 #endif
 
 #define LV_USE_LABEL       1
-#define LV_USE_BTN         1
-#define LV_USE_ARC         1
 #define LV_FONT_MONTSERRAT_14  1
-#define LV_FONT_MONTSERRAT_20  1
 
 #define LV_USE_LOG         0
 #define LV_USE_ASSERT_NULL 1
