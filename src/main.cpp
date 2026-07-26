@@ -2,6 +2,7 @@
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 #include "RtcClock.h"
+#include "TaskLog.h"
 #include "wifi_secrets.h"
 
 // ---------------- Pins (confirmed against official README) ----------------
@@ -36,6 +37,7 @@ lv_group_t *group_main;
 lv_obj_t *scr_time;
 lv_group_t *group_time;
 
+lv_obj_t *main_active_label;
 lv_obj_t *active_task_label;
 
 lv_obj_t *btn_main_time;
@@ -43,19 +45,64 @@ lv_obj_t *btn_main_notes;
 lv_obj_t *btn_main_settings;
 lv_indev_drv_t indev_drv;
 
-const char *task_names[] = { "Sleep", "Sport", "Transport" };
+const char *task_names[] = { "Clear", "Sport", "Transport", "Walking", "Learning", "Eating", "Learning", "Gaming" };
 const int task_count = sizeof(task_names) / sizeof(task_names[0]);
 lv_obj_t *task_buttons[10];
+ActiveTaskState g_active; // reconstructed from log.csv at boot, updated in RAM after that
 
-int active_task_index = -1;
+
+static lv_style_t style_clear_btn;
+bool style_clear_initialized = false;
+
+void update_task_list_visuals() {
+  for (int i = 0; i < task_count; i++) {
+    lv_obj_t *btn = task_buttons[i];
+    if (!btn) continue;
+
+    // Label is the button's only child since we pass NULL as the icon below.
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (!label) continue;
+
+    if (g_active.active && strcmp(task_names[i], g_active.task_name) == 0) {
+      char buf[40];
+      snprintf(buf, sizeof(buf), LV_SYMBOL_OK " %s", task_names[i]);
+      lv_label_set_text(label, buf);
+    } else {
+      lv_label_set_text(label, task_names[i]);
+    }
+  }
+}
+
 
 // ===================================================================
 // Mock SD write -- replace with real SD card logic later.
 // ===================================================================
-void write_task_to_sd_mock(const char *task_name) {
-  char timebuf[9];
-  get_current_time(timebuf, sizeof(timebuf));
-  Serial.printf("[SD MOCK] %s -- active task: %s\n", timebuf, task_name);}
+//
+void format_duration(long total_seconds, char *buf, size_t buf_len) {
+  if (total_seconds < 0) total_seconds = 0;
+  long h = total_seconds / 3600;
+  long m = (total_seconds % 3600) / 60;
+  long s = total_seconds % 60;
+  if (h > 0)      snprintf(buf, buf_len, "%ldh %ldm", h, m);
+  else if (m > 0) snprintf(buf, buf_len, "%ldm %llds", m, (long long)s);
+  else            snprintf(buf, buf_len, "%llds", (long long)s);
+}
+void refresh_active_labels() {
+  char buf[64];
+  if (g_active.active) {
+    long elapsed = (long)(time(nullptr) - g_active.start_epoch);
+    char durbuf[16];
+    format_duration(elapsed, durbuf, sizeof(durbuf));
+    snprintf(buf, sizeof(buf), "Active: %s (%s)", g_active.task_name, durbuf);
+  } else {
+    snprintf(buf, sizeof(buf), "No active task");
+  }
+  if (main_active_label) lv_label_set_text(main_active_label, buf);
+  if (active_task_label) lv_label_set_text(active_task_label, buf);
+}
+
+
+
 
 // ===================================================================
 // Deep sleep
@@ -82,19 +129,36 @@ void enter_deep_sleep() {
 void show_main_menu();
 void show_time_menu();
 
+
 void time_task_event_cb(lv_event_t *e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-
   lv_obj_t *btn = lv_event_get_target(e);
 
   for (int i = 0; i < task_count; i++) {
-    if (task_buttons[i] == btn) {
-      active_task_index = i;
-      write_task_to_sd_mock(task_names[i]);
-//      lv_label_set_text_fmt(active_task_label, "Active: %s", task_names[i]);
-      show_main_menu();   
-      break;
+    if (task_buttons[i] != btn) continue;
+
+    const char *name = task_names[i];
+
+    if (strcmp(name, "Clear") == 0) {
+      if (g_active.active) {
+        log_task_event("end", g_active.task_name);
+        g_active.active = false;
+      }
+    } else {
+      // Switching tasks implicitly ends whatever was active before.
+      if (g_active.active) {
+        log_task_event("end", g_active.task_name);
+      }
+      log_task_event("start", name);
+      g_active.active = true;
+      g_active.start_epoch = time(nullptr);
+      strncpy(g_active.task_name, name, sizeof(g_active.task_name) - 1);
+      g_active.task_name[sizeof(g_active.task_name) - 1] = '\0';
     }
+
+    refresh_active_labels();
+    update_task_list_visuals();
+    break;
   }
 }
 
@@ -114,8 +178,9 @@ void build_time_menu() {
   lv_obj_set_size(list, tft.width() - 10, tft.height() - 60);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
 
+
   for (int i = 0; i < task_count; i++) {
-    lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_OK, task_names[i]);
+    lv_obj_t *btn = lv_list_add_btn(list, NULL, task_names[i]); // NULL icon -- tick added dynamically later
     lv_obj_add_event_cb(btn, time_task_event_cb, LV_EVENT_CLICKED, NULL);
     lv_group_add_obj(group_time, btn);
     task_buttons[i] = btn;
@@ -126,6 +191,8 @@ void show_time_menu() {
   lv_indev_set_group(encoder_indev, group_time);
   lv_scr_load(scr_time);
   lv_group_focus_obj(task_buttons[0]);
+  refresh_active_labels();
+  update_task_list_visuals(); // add this line
 }
 
 void main_menu_event_cb(lv_event_t *e) {
@@ -150,8 +217,13 @@ void build_main_menu() {
   lv_label_set_text(title, "Main Menu");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
 
+
+  main_active_label = lv_label_create(scr_main);
+  lv_label_set_text(main_active_label, "No active task");
+  lv_obj_align(main_active_label, LV_ALIGN_TOP_MID, 0, 25);
+
   lv_obj_t *list = lv_list_create(scr_main);
-  lv_obj_set_size(list, tft.width() - 10, tft.height() - 40);
+  lv_obj_set_size(list, tft.width() - 10, tft.height() - 65);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
 
   btn_main_time     = lv_list_add_btn(list, LV_SYMBOL_OK, "Time");
@@ -267,7 +339,7 @@ void setup() {
   tft.setRotation(3); // must come before reading tft.width()/height()
 
   
-  bool synced = sync_time_ntp(WIFI_SSID, WIFI_PASSWORD, 2 * 3600, 0, 5000);
+  bool synced = sync_time_ntp(WIFI_SSID, WIFI_PASSWORD, 2 * 3600, 3600, 5000);
   if (!synced) {
     // Fallback: at least get something roughly sane rather than 1970
     set_system_time(2026, 7, 26, 12, 0, 0);
@@ -290,8 +362,18 @@ void setup() {
   indev_drv.read_cb = encoder_read;
   encoder_indev = lv_indev_drv_register(&indev_drv);
 
+  if (sd_init()) {
+    g_active = read_active_task_from_log();
+    if (g_active.active) {
+      Serial.printf("[Boot] Resumed active task: %s\n", g_active.task_name);
+    }
+  } else {
+    g_active.active = false;
+  }
+
   build_main_menu();
   build_time_menu();
+  update_task_list_visuals(); // add this line
 
   show_main_menu();
 }
@@ -301,6 +383,13 @@ void loop() {
   uint32_t now = millis();
   lv_tick_inc(now - last_tick);
   last_tick = now;
+
+  
+  static uint32_t last_refresh = 0;
+  if (millis() - last_refresh > 1000) {
+    last_refresh = millis();
+    if (g_active.active) refresh_active_labels();
+  }
 
   lv_timer_handler();
   handle_back_button();   
