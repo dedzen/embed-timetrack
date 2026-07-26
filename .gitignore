@@ -1,2 +1,4 @@
 .pio/
 .pio
+.env
+include/wifi_secrets.h
