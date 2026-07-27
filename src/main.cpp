@@ -4,6 +4,7 @@
 #include "RtcClock.h"
 #include "TaskLog.h"
 #include "wifi_secrets.h"
+#include "SyncServer.h"
 
 // ---------------- Pins (confirmed against official README) ----------------
 #define ENCODER_INA     4
@@ -43,6 +44,13 @@ lv_obj_t *active_task_label;
 lv_obj_t *btn_main_time;
 lv_obj_t *btn_main_notes;
 lv_obj_t *btn_main_settings;
+lv_obj_t *scr_settings;
+lv_group_t *group_settings;
+lv_obj_t *btn_settings_sync;
+
+lv_obj_t *scr_sync;
+lv_obj_t *sync_status_label;
+bool sync_active = false;
 lv_indev_drv_t indev_drv;
 
 const char *task_names[] = { "Clear", "Sport", "Transport", "Walking", "Learning", "Eating", "Learning", "Gaming" };
@@ -128,7 +136,17 @@ void enter_deep_sleep() {
 // ===================================================================
 void show_main_menu();
 void show_time_menu();
+void show_settings_menu();
+void show_sync_screen();
 
+
+void settings_menu_event_cb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  lv_obj_t *btn = lv_event_get_target(e);
+  if (btn == btn_settings_sync) {
+    show_sync_screen();
+  }
+}
 
 void time_task_event_cb(lv_event_t *e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -205,7 +223,7 @@ void main_menu_event_cb(lv_event_t *e) {
   } else if (btn == btn_main_notes) {
     Serial.println("Notes selected (not implemented yet)");
   } else if (btn == btn_main_settings) {
-    Serial.println("Settings selected (not implemented yet)");
+    show_settings_menu();
   }
 }
 
@@ -245,6 +263,69 @@ void show_main_menu() {
   lv_group_focus_obj(btn_main_time);
 }
 
+
+
+
+void build_settings_menu() {
+  scr_settings = lv_obj_create(NULL);
+  group_settings = lv_group_create();
+
+  lv_obj_t *title = lv_label_create(scr_settings);
+  lv_label_set_text(title, "Settings");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+  lv_obj_t *list = lv_list_create(scr_settings);
+  lv_obj_set_size(list, tft.width() - 10, tft.height() - 40);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
+
+  btn_settings_sync = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Sync with PC");
+  lv_obj_add_event_cb(btn_settings_sync, settings_menu_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_group_add_obj(group_settings, btn_settings_sync);
+}
+
+void show_settings_menu() {
+  lv_indev_set_group(encoder_indev, group_settings);
+  lv_scr_load(scr_settings);
+  lv_group_focus_obj(btn_settings_sync);
+}
+void build_sync_screen() {
+  scr_sync = lv_obj_create(NULL);
+
+  lv_obj_t *title = lv_label_create(scr_sync);
+  lv_label_set_text(title, "Sync with PC");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+  sync_status_label = lv_label_create(scr_sync);
+  lv_label_set_text(sync_status_label, "");
+  lv_label_set_long_mode(sync_status_label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(sync_status_label, tft.width() - 20);
+  lv_obj_align(sync_status_label, LV_ALIGN_CENTER, 0, -10);
+
+  lv_obj_t *hint = lv_label_create(scr_sync);
+  lv_label_set_text(hint, "Press BACK to stop");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+}
+
+void show_sync_screen() {
+  lv_indev_set_group(encoder_indev, NULL); // nothing selectable on this screen
+  lv_scr_load(scr_sync);
+
+  lv_label_set_text(sync_status_label, "Connecting to WiFi...");
+  //_lv_disp_refr_timer(display->refr_timer); // force redraw now -- WiFi.begin() blocks below
+
+  char ip_buf[16];
+  bool ok = sync_server_start(WIFI_SSID, WIFI_PASSWORD, ip_buf, sizeof(ip_buf), 5000);
+
+  if (ok) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Serving at:\nhttp://%s/log.csv", ip_buf);
+    lv_label_set_text(sync_status_label, msg);
+    sync_active = true;
+  } else {
+    lv_label_set_text(sync_status_label, "WiFi connection failed");
+    sync_active = false;
+  }
+}
 // ===================================================================
 // BACK navigation
 // ===================================================================
@@ -252,7 +333,15 @@ void go_back() {
   if (lv_scr_act() == scr_time) {
     show_main_menu();
   }
-}
+  else if (lv_scr_act() == scr_settings) {
+    show_main_menu();
+  } else if (lv_scr_act() == scr_sync) {
+    if (sync_active) {
+      sync_server_stop();
+      sync_active = false;
+    }
+    show_settings_menu();
+  }}
 
 // ===================================================================
 // LVGL display flush
@@ -373,6 +462,8 @@ void setup() {
 
   build_main_menu();
   build_time_menu();
+  build_settings_menu();
+  build_sync_screen();
   update_task_list_visuals(); // add this line
 
   show_main_menu();
@@ -384,6 +475,7 @@ void loop() {
   lv_tick_inc(now - last_tick);
   last_tick = now;
 
+  if (sync_active) sync_server_handle();
   
   static uint32_t last_refresh = 0;
   if (millis() - last_refresh > 1000) {
