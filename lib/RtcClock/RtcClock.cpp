@@ -39,6 +39,12 @@ void get_full_datetime(char *buf, size_t buf_len) {
   strftime(buf, buf_len, "%Y-%m-%d %H:%M:%S", &timeinfo);
 }
 
+void apply_timezone() {
+  setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);
+  tzset();
+}
+
+
 bool sync_time_ntp(const char *ssid, const char *password, uint32_t timeout_ms) {
   uint32_t start = millis();
 
@@ -56,9 +62,14 @@ bool sync_time_ntp(const char *ssid, const char *password, uint32_t timeout_ms) 
 
   Serial.println("[NTP] WiFi connected, requesting time...");
 
+  // ntp_sync_completed = false;
+  // sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+  // configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", "pool.ntp.org");
   ntp_sync_completed = false;
   sntp_set_time_sync_notification_cb(time_sync_notification_cb);
-  configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", "pool.ntp.org");
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  if (!sntp_enabled()) sntp_init();
 
   uint32_t elapsed = millis() - start;
   uint32_t remaining = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 500;

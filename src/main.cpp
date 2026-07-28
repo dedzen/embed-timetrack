@@ -3,8 +3,9 @@
 #include <lvgl.h>
 #include "RtcClock.h"
 #include "TaskLog.h"
-#include "wifi_secrets.h"
 #include "SyncServer.h"
+#include "BatteryGauge.h"
+#include "wifi_secrets.h"
 
 // ---------------- Pins (confirmed against official README) ----------------
 #define ENCODER_INA     4
@@ -58,6 +59,9 @@ lv_obj_t *scr_time_sync;
 lv_obj_t *time_sync_status_label;
 lv_obj_t *btn_settings_synctime;
 
+lv_obj_t *topbar_time_label;
+lv_obj_t *topbar_batt_label;
+
 const char *task_names[] = { "Clear", "Sport", "Transport", "Walking", "Learning", "Eating", "Learning", "Gaming" };
 const int task_count = sizeof(task_names) / sizeof(task_names[0]);
 lv_obj_t *task_buttons[10];
@@ -87,10 +91,6 @@ void update_task_list_visuals() {
 }
 
 
-// ===================================================================
-// Mock SD write -- replace with real SD card logic later.
-// ===================================================================
-//
 void format_duration(long total_seconds, char *buf, size_t buf_len) {
   if (total_seconds < 0) total_seconds = 0;
   long h = total_seconds / 3600;
@@ -112,6 +112,46 @@ void refresh_active_labels() {
   }
   if (main_active_label) lv_label_set_text(main_active_label, buf);
   if (active_task_label) lv_label_set_text(active_task_label, buf);
+}
+
+
+void create_top_bar(lv_obj_t *parent, lv_obj_t **time_label_out, lv_obj_t **batt_label_out) {
+  lv_obj_t *bar = lv_obj_create(parent);
+  lv_obj_remove_style_all(bar);
+  lv_obj_set_size(bar, tft.width(), 20);
+  lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+
+  lv_obj_t *time_label = lv_label_create(bar);
+  lv_label_set_text(time_label, "--:--");
+  lv_obj_set_style_text_color(time_label, lv_color_white(), 0); // <-- add this
+  lv_obj_align(time_label, LV_ALIGN_LEFT_MID, 5, 0);
+
+  lv_obj_t *batt_label = lv_label_create(bar);
+  lv_label_set_text(batt_label, "--%");
+  lv_obj_set_style_text_color(batt_label, lv_color_white(), 0); // <-- add this
+  lv_obj_align(batt_label, LV_ALIGN_RIGHT_MID, -5, 0);
+
+  *time_label_out = time_label;
+  *batt_label_out = batt_label;
+}
+
+void update_top_bar() {
+  if (!topbar_time_label || !topbar_batt_label) return;
+
+  char timebuf[6];
+  time_t now = time(nullptr);
+  struct tm ti;
+  localtime_r(&now, &ti);
+  strftime(timebuf, sizeof(timebuf), "%H:%M", &ti);
+  lv_label_set_text(topbar_time_label, timebuf);
+
+  int pct = read_battery_percent();
+  char battbuf[8];
+  if (pct >= 0) snprintf(battbuf, sizeof(battbuf), "%d%%", pct);
+  else          snprintf(battbuf, sizeof(battbuf), "?%%");
+  lv_label_set_text(topbar_batt_label, battbuf);
 }
 
 
@@ -276,12 +316,9 @@ void main_menu_event_cb(lv_event_t *e) {
 void build_main_menu() {
   scr_main = lv_obj_create(NULL);
   group_main = lv_group_create();
-
-  lv_obj_t *title = lv_label_create(scr_main);
-  lv_label_set_text(title, "Main Menu");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
-
-
+  
+  create_top_bar(scr_main, &topbar_time_label, &topbar_batt_label);
+  
   main_active_label = lv_label_create(scr_main);
   lv_label_set_text(main_active_label, "No active task");
   lv_obj_align(main_active_label, LV_ALIGN_TOP_MID, 0, 25);
@@ -468,6 +505,7 @@ void setup() {
   delay(50);       
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
+  apply_timezone();
 
   pinMode(ENCODER_INA, INPUT_PULLUP);
   pinMode(ENCODER_INB, INPUT_PULLUP);
@@ -476,6 +514,7 @@ void setup() {
 
   lastA = digitalRead(ENCODER_INA);
   attachInterrupt(digitalPinToInterrupt(ENCODER_INA), readEncoder, CHANGE);
+  battery_gauge_init();
 
   tft.init();
   tft.setRotation(3); // must come before reading tft.width()/height()
@@ -532,6 +571,7 @@ void loop() {
   if (millis() - last_refresh > 1000) {
     last_refresh = millis();
     if (g_active.active) refresh_active_labels();
+    if (lv_scr_act() == scr_main) update_top_bar();
   }
 
   lv_timer_handler();
