@@ -2,6 +2,13 @@
 #include <time.h>
 #include <sys/time.h>
 #include <WiFi.h>
+#include "esp_sntp.h"
+
+static volatile bool ntp_sync_completed = false;
+
+static void time_sync_notification_cb(struct timeval *tv) {
+  ntp_sync_completed = true;
+}
 
 void set_system_time(int year, int month, int day, int hour, int min, int sec) {
   struct tm t = {};
@@ -24,10 +31,15 @@ void get_current_time(char *buf, size_t buf_len) {
   localtime_r(&now, &timeinfo);
   strftime(buf, buf_len, "%H:%M:%S", &timeinfo);
 }
+void get_full_datetime(char *buf, size_t buf_len) {
+  time_t now;
+  struct tm timeinfo;
+  time(&now);
+  localtime_r(&now, &timeinfo);
+  strftime(buf, buf_len, "%Y-%m-%d %H:%M:%S", &timeinfo);
+}
 
-bool sync_time_ntp(const char *ssid, const char *password,
-                    long gmt_offset_sec, int daylight_offset_sec,
-                    uint32_t timeout_ms) {
+bool sync_time_ntp(const char *ssid, const char *password, uint32_t timeout_ms) {
   uint32_t start = millis();
 
   WiFi.begin(ssid, password);
@@ -43,22 +55,27 @@ bool sync_time_ntp(const char *ssid, const char *password,
   }
 
   Serial.println("[NTP] WiFi connected, requesting time...");
-  configTime(gmt_offset_sec, daylight_offset_sec, "pool.ntp.org");
 
-  // Whatever's left of the original budget goes to the NTP fetch itself.
+  ntp_sync_completed = false;
+  sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+  configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", "pool.ntp.org");
+
   uint32_t elapsed = millis() - start;
   uint32_t remaining = (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 500;
+  uint32_t wait_start = millis();
 
-  struct tm timeinfo;
-  bool ok = getLocalTime(&timeinfo, remaining);
+  // Wait for the REAL callback, not a heuristic guess based on the clock's current value.
+  while (!ntp_sync_completed && (millis() - wait_start < remaining)) {
+    delay(50);
+  }
 
   WiFi.disconnect(true);
 
-  if (ok) {
-    Serial.println("[NTP] Time synced successfully");
+  if (ntp_sync_completed) {
+    Serial.println("[NTP] Time synced successfully (confirmed via callback)");
   } else {
-    Serial.println("[NTP] Sync failed or timed out");
+    Serial.println("[NTP] Sync failed or timed out (no callback fired)");
   }
 
-  return ok;
+  return ntp_sync_completed;
 }

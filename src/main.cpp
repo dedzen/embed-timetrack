@@ -53,6 +53,11 @@ lv_obj_t *sync_status_label;
 bool sync_active = false;
 lv_indev_drv_t indev_drv;
 
+
+lv_obj_t *scr_time_sync;
+lv_obj_t *time_sync_status_label;
+lv_obj_t *btn_settings_synctime;
+
 const char *task_names[] = { "Clear", "Sport", "Transport", "Walking", "Learning", "Eating", "Learning", "Gaming" };
 const int task_count = sizeof(task_names) / sizeof(task_names[0]);
 lv_obj_t *task_buttons[10];
@@ -138,6 +143,7 @@ void show_main_menu();
 void show_time_menu();
 void show_settings_menu();
 void show_sync_screen();
+void show_time_sync_screen();
 
 
 void settings_menu_event_cb(lv_event_t *e) {
@@ -145,6 +151,8 @@ void settings_menu_event_cb(lv_event_t *e) {
   lv_obj_t *btn = lv_event_get_target(e);
   if (btn == btn_settings_sync) {
     show_sync_screen();
+  }else if (btn == btn_settings_synctime) {
+    show_time_sync_screen();
   }
 }
 
@@ -202,6 +210,44 @@ void build_time_menu() {
     lv_obj_add_event_cb(btn, time_task_event_cb, LV_EVENT_CLICKED, NULL);
     lv_group_add_obj(group_time, btn);
     task_buttons[i] = btn;
+  }
+}
+
+
+void build_time_sync_screen() {
+  scr_time_sync = lv_obj_create(NULL);
+
+  lv_obj_t *title = lv_label_create(scr_time_sync);
+  lv_label_set_text(title, "Sync Time");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+  time_sync_status_label = lv_label_create(scr_time_sync);
+  lv_label_set_text(time_sync_status_label, "");
+  lv_label_set_long_mode(time_sync_status_label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(time_sync_status_label, tft.width() - 20);
+  lv_obj_align(time_sync_status_label, LV_ALIGN_CENTER, 0, -10);
+
+  lv_obj_t *hint = lv_label_create(scr_time_sync);
+  lv_label_set_text(hint, "Press BACK to return");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+}
+
+void show_time_sync_screen() {
+  lv_indev_set_group(encoder_indev, NULL);
+  lv_scr_load(scr_time_sync);
+
+  lv_label_set_text(time_sync_status_label, "Connecting to WiFi...");
+
+  bool synced = sync_time_ntp(WIFI_SSID, WIFI_PASSWORD,  5000);
+
+  if (synced) {
+    char timebuf[9];
+    get_current_time(timebuf, sizeof(timebuf));
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Synced!\nCurrent time: %s", timebuf);
+    lv_label_set_text(time_sync_status_label, msg);
+  } else {
+    lv_label_set_text(time_sync_status_label, "Sync failed -- check WiFi credentials/signal");
   }
 }
 
@@ -281,6 +327,10 @@ void build_settings_menu() {
   btn_settings_sync = lv_list_add_btn(list, LV_SYMBOL_WIFI, "Sync with PC");
   lv_obj_add_event_cb(btn_settings_sync, settings_menu_event_cb, LV_EVENT_CLICKED, NULL);
   lv_group_add_obj(group_settings, btn_settings_sync);
+
+  btn_settings_synctime = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Sync Time");
+  lv_obj_add_event_cb(btn_settings_synctime, settings_menu_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_group_add_obj(group_settings, btn_settings_synctime);
 }
 
 void show_settings_menu() {
@@ -341,7 +391,10 @@ void go_back() {
       sync_active = false;
     }
     show_settings_menu();
-  }}
+  } else if (lv_scr_act() == scr_time_sync) {
+    show_settings_menu();
+  }
+  }
 
 // ===================================================================
 // LVGL display flush
@@ -427,12 +480,9 @@ void setup() {
   tft.init();
   tft.setRotation(3); // must come before reading tft.width()/height()
 
-  
-  bool synced = sync_time_ntp(WIFI_SSID, WIFI_PASSWORD, 2 * 3600, 3600, 5000);
-  if (!synced) {
-    // Fallback: at least get something roughly sane rather than 1970
-    set_system_time(2026, 7, 26, 12, 0, 0);
-  }
+  //char dbgbuf[24];
+  //get_full_datetime(dbgbuf, sizeof(dbgbuf));
+  //Serial.printf("[Boot] RTC time at startup: %s\n", dbgbuf);  
 
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, buf1, NULL, tft.width() * 20);
@@ -464,6 +514,7 @@ void setup() {
   build_time_menu();
   build_settings_menu();
   build_sync_screen();
+  build_time_sync_screen();
   update_task_list_visuals(); // add this line
 
   show_main_menu();
