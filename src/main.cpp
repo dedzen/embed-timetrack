@@ -5,6 +5,7 @@
 #include "TaskLog.h"
 #include "SyncServer.h"
 #include "BatteryGauge.h"
+#include "TaskDefs.h"
 #include "wifi_secrets.h"
 
 // ---------------- Pins (confirmed against official README) ----------------
@@ -62,35 +63,47 @@ lv_obj_t *btn_settings_synctime;
 lv_obj_t *topbar_time_label;
 lv_obj_t *topbar_batt_label;
 
-const char *task_names[] = { "Clear", "Sport", "Transport", "Walking", "Learning", "Eating", "Learning", "Gaming" };
-const int task_count = sizeof(task_names) / sizeof(task_names[0]);
-lv_obj_t *task_buttons[10];
+
+lv_obj_t *category_buttons[task_category_count];
+lv_obj_t *btn_clear;
+
+lv_obj_t *category_popup = nullptr;
+lv_group_t *group_popup = nullptr;
+int active_category_index = -1;
 ActiveTaskState g_active; // reconstructed from log.csv at boot, updated in RAM after that
 
 
 static lv_style_t style_clear_btn;
 bool style_clear_initialized = false;
 
-void update_task_list_visuals() {
-  for (int i = 0; i < task_count; i++) {
-    lv_obj_t *btn = task_buttons[i];
-    if (!btn) continue;
 
-    // Label is the button's only child since we pass NULL as the icon below.
+void update_task_list_visuals() {
+  char active_category[32] = "";
+  if (g_active.active) {
+    const char *sep = strstr(g_active.task_name, ": ");
+    if (sep) {
+      size_t len = sep - g_active.task_name;
+      if (len >= sizeof(active_category)) len = sizeof(active_category) - 1;
+      strncpy(active_category, g_active.task_name, len);
+      active_category[len] = '\0';
+    }
+  }
+
+  for (int i = 0; i < task_category_count; i++) {
+    lv_obj_t *btn = category_buttons[i];
+    if (!btn) continue;
     lv_obj_t *label = lv_obj_get_child(btn, 0);
     if (!label) continue;
 
-    if (g_active.active && strcmp(task_names[i], g_active.task_name) == 0) {
+    if (g_active.active && strcmp(task_categories[i].name, active_category) == 0) {
       char buf[40];
-      snprintf(buf, sizeof(buf), LV_SYMBOL_OK " %s", task_names[i]);
+      snprintf(buf, sizeof(buf), LV_SYMBOL_OK " %s", task_categories[i].name);
       lv_label_set_text(label, buf);
     } else {
-      lv_label_set_text(label, task_names[i]);
+      lv_label_set_text(label, task_categories[i].name);
     }
   }
 }
-
-
 void format_duration(long total_seconds, char *buf, size_t buf_len) {
   if (total_seconds < 0) total_seconds = 0;
   long h = total_seconds / 3600;
@@ -196,63 +209,151 @@ void settings_menu_event_cb(lv_event_t *e) {
   }
 }
 
-void time_task_event_cb(lv_event_t *e) {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-  lv_obj_t *btn = lv_event_get_target(e);
 
-  for (int i = 0; i < task_count; i++) {
-    if (task_buttons[i] != btn) continue;
-
-    const char *name = task_names[i];
-
-    if (strcmp(name, "Clear") == 0) {
-      if (g_active.active) {
-        log_task_event("end", g_active.task_name);
-        g_active.active = false;
-      }
-    } else {
-      // Switching tasks implicitly ends whatever was active before.
-      if (g_active.active) {
-        log_task_event("end", g_active.task_name);
-      }
-      log_task_event("start", name);
-      g_active.active = true;
-      g_active.start_epoch = time(nullptr);
-      strncpy(g_active.task_name, name, sizeof(g_active.task_name) - 1);
-      g_active.task_name[sizeof(g_active.task_name) - 1] = '\0';
-    }
-
-    refresh_active_labels();
-    update_task_list_visuals();
-    break;
+void close_category_popup() {
+  if (category_popup) {
+    lv_obj_del(category_popup);
+    category_popup = nullptr;
   }
+  if (group_popup) {
+    lv_group_del(group_popup);
+    group_popup = nullptr;
+  }
+  active_category_index = -1;
+  lv_indev_set_group(encoder_indev, group_time);
 }
+
+void child_task_event_cb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  if (active_category_index < 0) return;
+
+  int child_idx = (int)(intptr_t)lv_event_get_user_data(e);
+  const TaskCategory &cat = task_categories[active_category_index];
+  const char *child_name = cat.children[child_idx];
+
+  char full_name[32];
+  snprintf(full_name, sizeof(full_name), "%s: %s", cat.name, child_name);
+
+  if (g_active.active) {
+    log_task_event("end", g_active.task_name);
+  }
+  log_task_event("start", full_name);
+  g_active.active = true;
+  g_active.start_epoch = time(nullptr);
+  strncpy(g_active.task_name, full_name, sizeof(g_active.task_name) - 1);
+  g_active.task_name[sizeof(g_active.task_name) - 1] = '\0';
+
+  refresh_active_labels();
+  update_task_list_visuals();
+  close_category_popup();
+}
+
+void open_category_popup(int cat_idx) {
+  const TaskCategory &cat = task_categories[cat_idx];
+
+  category_popup = lv_obj_create(scr_time);
+  lv_obj_set_size(category_popup, tft.width() - 20, tft.height() - 20);
+  lv_obj_align(category_popup, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_color(category_popup, lv_color_hex(0xc9d4a1), 0);
+  lv_obj_set_style_bg_opa(category_popup, LV_OPA_COVER, 0.5f);
+  lv_obj_set_style_border_width(category_popup, 2, 0);
+  lv_obj_set_style_border_color(category_popup, lv_color_black(), 0);
+
+  lv_obj_t *title = lv_label_create(category_popup);
+  lv_label_set_text(title, cat.name);
+  lv_obj_set_style_text_color(title, lv_color_black(), 0);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+  lv_obj_update_layout(category_popup);
+  Serial.printf("popup size: %d x %d\n", lv_obj_get_width(category_popup), lv_obj_get_height(category_popup));
+
+  lv_obj_t *list = lv_list_create(category_popup);
+  lv_obj_set_size(list, lv_obj_get_width(category_popup) - 10, lv_obj_get_height(category_popup) - 40);
+  lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+  group_popup = lv_group_create();
+  lv_obj_t *first_btn = nullptr;
+
+  // If a child of THIS category is currently active, tick it in the popup.
+  const char *active_child = nullptr;
+  char active_category_name[32] = "";
+  if (g_active.active) {
+    const char *sep = strstr(g_active.task_name, ": ");
+    if (sep) {
+      size_t len = sep - g_active.task_name;
+      if (len >= sizeof(active_category_name)) len = sizeof(active_category_name) - 1;
+      strncpy(active_category_name, g_active.task_name, len);
+      active_category_name[len] = '\0';
+      if (strcmp(active_category_name, cat.name) == 0) {
+        active_child = sep + 2;
+      }
+    }
+  }
+
+  for (int i = 0; i < cat.child_count; i++) {
+    const char *icon = (active_child && strcmp(active_child, cat.children[i]) == 0) ? LV_SYMBOL_OK : NULL;
+    lv_obj_t *btn = lv_list_add_btn(list, icon, cat.children[i]);
+    lv_obj_set_style_text_color(btn, lv_color_black(), 0);
+    lv_obj_add_event_cb(btn, child_task_event_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    lv_group_add_obj(group_popup, btn);
+    if (!first_btn) first_btn = btn;
+    Serial.printf("Added  %s to categoty\n", cat.children[i]);
+  }
+  Serial.printf("list size: %d x %d, pos: %d,%d\n",
+  lv_obj_get_width(list), lv_obj_get_height(list),
+  lv_obj_get_x(list), lv_obj_get_y(list));
+
+  active_category_index = cat_idx;
+  lv_indev_set_group(encoder_indev, group_popup);
+  if (first_btn) lv_group_focus_obj(first_btn);
+}
+
+void category_button_event_cb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  int cat_idx = (int)(intptr_t)lv_event_get_user_data(e);
+  open_category_popup(cat_idx);
+}
+
+void clear_button_event_cb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  if (g_active.active) {
+    log_task_event("end", g_active.task_name);
+    g_active.active = false;
+  }
+  refresh_active_labels();
+  update_task_list_visuals();
+}
+
 
 void build_time_menu() {
   scr_time = lv_obj_create(NULL);
   group_time = lv_group_create();
 
   lv_obj_t *title = lv_label_create(scr_time);
-  lv_label_set_text(title, "Time - select task");
+  lv_label_set_text(title, "Time - select category");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
 
   active_task_label = lv_label_create(scr_time);
-  lv_label_set_text(active_task_label, "Active: none");
+  lv_label_set_text(active_task_label, "No active task");
   lv_obj_align(active_task_label, LV_ALIGN_TOP_MID, 0, 25);
 
   lv_obj_t *list = lv_list_create(scr_time);
   lv_obj_set_size(list, tft.width() - 10, tft.height() - 60);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
 
+  btn_clear = lv_list_add_btn(list, NULL, "Clear");
+  lv_obj_add_event_cb(btn_clear, clear_button_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_group_add_obj(group_time, btn_clear);
 
-  for (int i = 0; i < task_count; i++) {
-    lv_obj_t *btn = lv_list_add_btn(list, NULL, task_names[i]); // NULL icon -- tick added dynamically later
-    lv_obj_add_event_cb(btn, time_task_event_cb, LV_EVENT_CLICKED, NULL);
+  for (int i = 0; i < task_category_count; i++) {
+    lv_obj_t *btn = lv_list_add_btn(list, NULL, task_categories[i].name);
+    lv_obj_add_event_cb(btn, category_button_event_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
     lv_group_add_obj(group_time, btn);
-    task_buttons[i] = btn;
+    category_buttons[i] = btn;
   }
-}
 
+
+}
 
 void build_time_sync_screen() {
   scr_time_sync = lv_obj_create(NULL);
@@ -294,7 +395,7 @@ void show_time_sync_screen() {
 void show_time_menu() {
   lv_indev_set_group(encoder_indev, group_time);
   lv_scr_load(scr_time);
-  lv_group_focus_obj(task_buttons[0]);
+  lv_group_focus_obj(btn_clear);
   refresh_active_labels();
   update_task_list_visuals(); // add this line
 }
@@ -327,9 +428,9 @@ void build_main_menu() {
   lv_obj_set_size(list, tft.width() - 10, tft.height() - 65);
   lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
 
-  btn_main_time     = lv_list_add_btn(list, LV_SYMBOL_OK, "Time");
-  btn_main_notes    = lv_list_add_btn(list, LV_SYMBOL_OK, "Notes");
-  btn_main_settings = lv_list_add_btn(list, LV_SYMBOL_OK, "Settings");
+  btn_main_time     = lv_list_add_btn(list, LV_SYMBOL_HOME, "Time");
+  btn_main_notes    = lv_list_add_btn(list, LV_SYMBOL_SAVE, "Notes");
+  btn_main_settings = lv_list_add_btn(list, LV_SYMBOL_SETTINGS, "Settings");
 
   lv_obj_add_event_cb(btn_main_time,     main_menu_event_cb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(btn_main_notes,    main_menu_event_cb, LV_EVENT_CLICKED, NULL);
@@ -417,27 +518,25 @@ void show_sync_screen() {
 // BACK navigation
 // ===================================================================
 void go_back() {
+  if (category_popup) {
+    close_category_popup();
+    return;
+  }
   if (lv_scr_act() == scr_time) {
     show_main_menu();
-  }
-  else if (lv_scr_act() == scr_settings) {
+  } else if (lv_scr_act() == scr_settings) {
     show_main_menu();
   } else if (lv_scr_act() == scr_sync) {
-    if (sync_active) {
-      sync_server_stop();
-      sync_active = false;
-    }
+    if (sync_active) { sync_server_stop(); sync_active = false; }
     show_settings_menu();
   } else if (lv_scr_act() == scr_time_sync) {
     show_settings_menu();
   }
-  }
-
+}
 // ===================================================================
 // LVGL display flush
 // ===================================================================
 
-uint32_t flush_call_count = 0;
 
 void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
 
