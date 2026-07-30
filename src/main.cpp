@@ -15,7 +15,7 @@
 #define BACK_BUTTON_PIN 6    // BOARD_USER_KEY
 
 #define BOARD_PWR_EN 15
-#define LONG_PRESS_MS   3000 // hold BACK this long to trigger deep sleep
+#define LONG_PRESS_MS   1500 // hold BACK this long to trigger deep sleep
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -664,8 +664,16 @@ void loop() {
   lv_tick_inc(now - last_tick);
   last_tick = now;
 
-  if (sync_active) sync_server_handle();
-  
+  if (sync_active) {
+    sync_server_handle();
+    if (sync_server_log_was_cleared()) {
+      g_active.active = false;
+      refresh_active_labels();
+      update_task_list_visuals();
+      Serial.println("[Sync] Log cleared remotely -- active task state reset");
+    }
+  }
+
   static uint32_t last_refresh = 0;
   if (millis() - last_refresh > 1000) {
     last_refresh = millis();

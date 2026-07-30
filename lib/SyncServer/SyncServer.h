@@ -12,3 +12,4 @@ void sync_server_handle();
 
 // Stops the server and disconnects WiFi.
 void sync_server_stop();
+bool sync_server_log_was_cleared();
