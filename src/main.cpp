@@ -522,7 +522,10 @@ void go_back() {
     close_category_popup();
     return;
   }
-  if (lv_scr_act() == scr_time) {
+  if (lv_scr_act()==scr_main){
+    enter_deep_sleep();
+  }
+  else if (lv_scr_act() == scr_time) {
     show_main_menu();
   } else if (lv_scr_act() == scr_settings) {
     show_main_menu();
