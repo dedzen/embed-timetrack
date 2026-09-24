@@ -5,6 +5,7 @@
 #include "TaskLog.h"
 #include "SyncServer.h"
 #include "BatteryGauge.h"
+#include "NfcReader.h"
 #include "TaskDefs.h"
 #include "wifi_secrets.h"
 
@@ -54,7 +55,6 @@ lv_obj_t *scr_sync;
 lv_obj_t *sync_status_label;
 bool sync_active = false;
 lv_indev_drv_t indev_drv;
-
 
 lv_obj_t *scr_time_sync;
 lv_obj_t *time_sync_status_label;
@@ -176,6 +176,7 @@ void update_top_bar() {
 
 void enter_deep_sleep() {
   Serial.println("Entering deep sleep...");
+  nfc_reader_stop();
   tft.writecommand(0x10);
   digitalWrite(TFT_BL, LOW);
 
@@ -408,7 +409,7 @@ void main_menu_event_cb(lv_event_t *e) {
   if (btn == btn_main_time) {
     show_time_menu();
   } else if (btn == btn_main_notes) {
-    Serial.println("Notes selected (not implemented yet)");
+    return;
   } else if (btn == btn_main_settings) {
     show_settings_menu();
   }
@@ -567,6 +568,13 @@ void IRAM_ATTR readEncoder() {
 
 
 void encoder_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+  int a = digitalRead(ENCODER_INA);
+  int b = digitalRead(ENCODER_INB);
+  if (a != lastA) {
+    enc_diff += (b != a) ? 1 : -1;
+    lastA = a;
+  }
+
   data->enc_diff = enc_diff;
   data->state = (digitalRead(ENCODER_KEY) == LOW) ? LV_INDEV_STATE_PRESSED
                                                     : LV_INDEV_STATE_RELEASED;
@@ -617,6 +625,7 @@ void setup() {
   lastA = digitalRead(ENCODER_INA);
   attachInterrupt(digitalPinToInterrupt(ENCODER_INA), readEncoder, CHANGE);
   battery_gauge_init();
+  nfc_reader_init();
 
   tft.init();
   tft.setRotation(3); // must come before reading tft.width()/height()
@@ -686,6 +695,17 @@ void loop() {
 
   lv_timer_handler();
   handle_back_button();   
+  static bool nfc_main_active = false;
+  bool on_main_screen = lv_scr_act() == scr_main;
+  if (on_main_screen && !nfc_main_active) {
+    nfc_main_active = nfc_reader_start();
+  } else if (!on_main_screen && nfc_main_active) {
+    nfc_reader_stop();
+    nfc_main_active = false;
+  }
+  if (nfc_main_active) {
+    nfc_reader_update();
+  }
   delay(5);
 
 }

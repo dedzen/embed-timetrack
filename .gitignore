@@ -1,4 +1,6 @@
 .pio/
 .pio
 .env
+.vscode
 include/wifi_secrets.h
+temporary/
