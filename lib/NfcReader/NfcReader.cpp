@@ -27,6 +27,7 @@ bool card_present = false;
 uint32_t last_seen_at = 0;
 uint32_t last_arm_attempt_at = 0;
 char current_uid[32] = {};
+NfcTextCallback text_callback = nullptr;
 
 void uid_to_hex(const uint8_t *uid, uint8_t uid_length, char *out, size_t out_len) {
   out[0] = '\0';
@@ -345,7 +346,8 @@ bool init_reader() {
   return arm_passive_detection();
 }
 
-void print_detected_tag(const uint8_t *uid, uint8_t uid_length) {
+bool print_detected_tag(const uint8_t *uid, uint8_t uid_length, char *tag_text,
+                        size_t tag_text_len) {
   char uid_text[sizeof(current_uid)] = {};
   char card_id[12] = {};
   uid_to_hex(uid, uid_length, uid_text, sizeof(uid_text));
@@ -358,12 +360,13 @@ void print_detected_tag(const uint8_t *uid, uint8_t uid_length) {
   Serial.println(uid_type(uid_length));
   Serial.print(F("[NFC] Card ID: "));
   Serial.println(card_id);
-  char tag_text[80] = {};
-  if (read_tag_text(tag_text, sizeof(tag_text))) {
+  if (read_tag_text(tag_text, tag_text_len)) {
     Serial.print(F("[NFC] Text: "));
     Serial.println(tag_text);
+    return true;
   } else {
     Serial.println(F("[NFC] Text: <none>"));
+    return false;
   }
 }
 
@@ -378,7 +381,10 @@ void handle_detected_tag(const uint8_t *uid, uint8_t uid_length) {
   strlcpy(current_uid, detected_uid, sizeof(current_uid));
   card_present = true;
   last_seen_at = millis();
-  print_detected_tag(uid, uid_length);
+  char tag_text[80] = {};
+  if (print_detected_tag(uid, uid_length, tag_text, sizeof(tag_text)) && text_callback) {
+    text_callback(tag_text);
+  }
   reader_ready = false;
   detection_armed = false;
   digitalWrite(NFC_RESET, LOW);
@@ -401,6 +407,10 @@ void nfc_reader_init() {
   pinMode(NFC_RESET, OUTPUT);
   digitalWrite(NFC_RESET, LOW);
   pinMode(NFC_IRQ, INPUT_PULLUP);
+}
+
+void nfc_reader_set_text_callback(NfcTextCallback callback) {
+  text_callback = callback;
 }
 
 bool nfc_reader_start() {

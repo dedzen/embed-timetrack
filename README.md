@@ -93,7 +93,7 @@ Edit this table and rebuild to customize activities. The combined `Category: Act
 
 Open the serial monitor at **115200 baud**, stay on the main menu, and hold an ISO14443A tag near the board's NFC antenna. The reader follows the known-good IRQ-driven PN532 sequence from the local `temporary/test_pn532` firmware and prints tag details to serial.
 
-A held tag prints once; remove it briefly to scan it again. The reader prints UID, type, card ID for 4-byte UIDs, and tag text when present. The reader does not authenticate, dump full memory, write tag contents, or write task logs. The shared `Wire` bus uses the board's PN532 address `0x24`, 100 kHz I2C, and a short bus timeout. NFC work only runs while the main screen is active; leaving the main screen holds PN532 reset LOW.
+A held tag prints once; remove it briefly to scan it again. The reader prints UID, type, card ID for 4-byte UIDs, and tag text when present. If the text is `Category/Name` and matches an activity in `TaskDefs.h`, the firmware switches activity the same way the Time menu does: it appends an `end` event for the current activity, appends a `start` event for the scanned activity, updates the active task state, and refreshes the labels. The reader does not authenticate, dump full memory, write tag contents, or write arbitrary task logs. The shared `Wire` bus uses the board's PN532 address `0x24`, 100 kHz I2C, and a short bus timeout. NFC work only runs while the main screen is active; leaving the main screen holds PN532 reset LOW.
 
 ### Clock and sleep
 

@@ -249,6 +249,86 @@ void child_task_event_cb(lv_event_t *e) {
   close_category_popup();
 }
 
+bool switch_to_activity(const char *category_name, const char *activity_name) {
+  if (!category_name || !activity_name || !category_name[0] || !activity_name[0]) {
+    return false;
+  }
+
+  for (int cat_idx = 0; cat_idx < task_category_count; ++cat_idx) {
+    const TaskCategory &cat = task_categories[cat_idx];
+    if (strcmp(cat.name, category_name) != 0) continue;
+
+    for (int child_idx = 0; child_idx < cat.child_count; ++child_idx) {
+      if (strcmp(cat.children[child_idx], activity_name) != 0) continue;
+
+      char full_name[32];
+      snprintf(full_name, sizeof(full_name), "%s: %s", cat.name, cat.children[child_idx]);
+
+      if (g_active.active) {
+        log_task_event("end", g_active.task_name);
+      }
+      log_task_event("start", full_name);
+      g_active.active = true;
+      g_active.start_epoch = time(nullptr);
+      strncpy(g_active.task_name, full_name, sizeof(g_active.task_name) - 1);
+      g_active.task_name[sizeof(g_active.task_name) - 1] = '\0';
+
+      refresh_active_labels();
+      update_task_list_visuals();
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+void trim_ascii(char *text) {
+  if (!text) return;
+
+  char *start = text;
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') ++start;
+  if (start != text) memmove(text, start, strlen(start) + 1);
+
+  size_t len = strlen(text);
+  while (len > 0 &&
+         (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+          text[len - 1] == '\r' || text[len - 1] == '\n')) {
+    text[--len] = '\0';
+  }
+}
+
+void handle_nfc_text(const char *text) {
+  char command[80];
+  strlcpy(command, text ? text : "", sizeof(command));
+  trim_ascii(command);
+
+  char *separator = strchr(command, '/');
+  if (!separator || separator == command || separator[1] == '\0') {
+    Serial.print(F("[NFC] Ignored task tag: expected Category/Name, got: "));
+    Serial.println(command);
+    return;
+  }
+
+  *separator = '\0';
+  char *category_name = command;
+  char *activity_name = separator + 1;
+  trim_ascii(category_name);
+  trim_ascii(activity_name);
+
+  if (switch_to_activity(category_name, activity_name)) {
+    Serial.print(F("[NFC] Switched activity: "));
+    Serial.print(category_name);
+    Serial.print(F(": "));
+    Serial.println(activity_name);
+  } else {
+    Serial.print(F("[NFC] Ignored unknown task tag: "));
+    Serial.print(category_name);
+    Serial.print(F("/"));
+    Serial.println(activity_name);
+  }
+}
+
 void open_category_popup(int cat_idx) {
   const TaskCategory &cat = task_categories[cat_idx];
 
@@ -626,6 +706,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENCODER_INA), readEncoder, CHANGE);
   battery_gauge_init();
   nfc_reader_init();
+  nfc_reader_set_text_callback(handle_nfc_text);
 
   tft.init();
   tft.setRotation(3); // must come before reading tft.width()/height()
